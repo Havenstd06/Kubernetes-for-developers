@@ -1,98 +1,121 @@
-# Application Web avec de multiples volumes
+# Volumes dans Kubernetes
 
-## Objectif
+## Exercice Pratique : Application web avec stockage multi-types
 
-Créer une application web avec :
+### Objectif
 
-- Configuration externe (ConfigMap)
-- Stockage persistant pour les uploads
-- Volume partagé pour les logs
-- Sidecar container pour le traitement des logs
+Créer une application web utilisant différents types de volumes pour la configuration, la persistance et les logs.
 
-## Étape 1 : Créer la ConfigMap
+### 1. Configuration et stockage persistant
 
 ```yaml
+# webapp-volumes.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: webapp-config
+  labels:
+    app: webapp
 data:
   nginx.conf: |
-    server {
-      listen 80;
-      server_name localhost;
-      root /usr/share/nginx/html;
-      location /uploads {
-        alias /data/uploads;
+    events {
+      worker_connections 1024;
+    }
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+
+      server {
+        listen 80;
+        server_name localhost;
+        root /usr/share/nginx/html;
+
+        access_log /var/log/nginx/access.log;
+        error_log /var/log/nginx/error.log;
+
+        location / {
+          index index.html;
+        }
+
+        location /uploads {
+          alias /data/uploads/;
+          autoindex on;
+        }
       }
     }
-```
-
-## Étape 2 : Créer le PVC et le PVC
-
-```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: ebs-sc
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: ebs.csi.aws.com
-volumeBindingMode: WaitForFirstConsumer
-parameters:
-  type: gp3
-  encrypted: "true"
-```
-
-```yaml
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: uploads-pvc
+  labels:
+    app: webapp
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ebs-sc
+  storageClassName: gp2
   resources:
     requests:
       storage: 1Gi
 ```
 
-## Étape 3 : Créer le pod
+```bash
+kubectl apply -f webapp-volumes.yaml
+kubectl get configmaps
+kubectl get pvc
+kubectl describe pvc uploads-pvc
+```
+
+### 2. Pod avec volumes multiples
 
 ```yaml
+# webapp-pod.yaml
 apiVersion: v1
 kind: Pod
 metadata:
   name: webapp
+  labels:
+    app: webapp
 spec:
   containers:
     - name: nginx
-      image: nginx:latest
+      image: nginx:1.29
       ports:
         - containerPort: 80
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "250m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       volumeMounts:
         - name: config
-          mountPath: /etc/nginx/conf.d
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
         - name: uploads
           mountPath: /data/uploads
         - name: logs
           mountPath: /var/log/nginx
-
     - name: log-processor
-      image: busybox
-      command: [ "/bin/sh", "-c", "tail -f /logs/access.log | grep POST >> /logs/uploads.log" ]
+      image: busybox:1.28
+      command: [ "/bin/sh", "-c" ]
+      args:
+        - |
+          while true; do
+            if [ -f /logs/access.log ]; then
+              echo "Processing access logs..."
+              grep -E "(POST|PUT)" /logs/access.log | tail -5 >> /logs/uploads.log 2>/dev/null || true
+            fi
+            sleep 10
+          done
       volumeMounts:
         - name: logs
           mountPath: /logs
-
   volumes:
     - name: config
       configMap:
         name: webapp-config
-        items:
-          - key: nginx.conf
-            path: default.conf
     - name: uploads
       persistentVolumeClaim:
         claimName: uploads-pvc
@@ -100,88 +123,66 @@ spec:
       emptyDir: { }
 ```
 
-## Tâches à réaliser
-
-### 1. Configuration et Déploiement
-
-- Déployer tous les manifests
-- Vérifier que les volumes sont correctement montés
-- Valider la configuration nginx
-
-### 2. Test des uploads
-
 ```bash
-# Port forward pour accéder à l'application
-kubectl port-forward pod/webapp 8080:80
-
-# Créer un fichier test
-curl -X POST -F "file=@test.txt" http://localhost:8080/uploads/
+kubectl apply -f webapp-pod.yaml
+kubectl get pod webapp
+kubectl describe pod webapp
+kubectl get pvc
 ```
 
-### 3. Vérification des logs
+### 3. Scénarios à tester
+
+#### 3.1 Vérification des montages de volumes
 
 ```bash
-# Vérifier les logs nginx
-kubectl exec webapp -c nginx -- cat /var/log/nginx/access.log
+# Vérifier que tous les volumes sont montés
+kubectl exec webapp -c nginx -- df -h
+kubectl exec webapp -c nginx -- ls -la /etc/nginx/
+kubectl exec webapp -c nginx -- ls -la /data/uploads/
+kubectl exec webapp -c nginx -- ls -la /var/log/nginx/
 
-# Vérifier les logs traités
-kubectl exec webapp -c log-processor -- cat /logs/uploads.log
+# Vérifier depuis le sidecar
+kubectl exec webapp -c log-processor -- ls -la /logs/
 ```
 
-### 4. Tests de persistance
+#### 3.2 Test de persistance des données
 
 ```bash
+# Créer des fichiers de test dans le volume persistant
+kubectl exec webapp -c nginx -- sh -c "echo 'Test upload file' > /data/uploads/test.txt"
+kubectl exec webapp -c nginx -- ls -la /data/uploads/
+
 # Supprimer et recréer le pod
 kubectl delete pod webapp
-kubectl apply -f webapp.yaml
+kubectl apply -f webapp-pod.yaml
+kubectl wait --for=condition=Ready pod/webapp --timeout=60s
 
-# Vérifier que les uploads sont toujours présents
-kubectl exec webapp -c nginx -- ls /data/uploads
+# Vérifier que le fichier persiste
+kubectl exec webapp -c nginx -- cat /data/uploads/test.txt
 ```
 
-## Bonus
-
-### 1. Ajout de quotas
-
-- Ajouter des limites de ressources pour les volumes
-- Implémenter une rotation des logs
-
-### 2. Monitoring
-
-- Ajouter un conteneur pour collecter des métriques sur l'utilisation des volumes
-- Mettre en place des alertes sur l'espace disque
-
-### 3. Sécurité
-
-- Configurer les permissions appropriées sur les volumes
-- Mettre en place un chiffrement pour les données sensibles
-
-## Résultats attendus
-
-- Les fichiers uploadés doivent persister après redémarrage du pod
-- Les logs doivent être correctement traités par le sidecar
-- La configuration nginx doit être appliquée correctement
-- Les volumes doivent être montés avec les bonnes permissions
-
-## Commandes utiles pour le debugging
+### 4. Debug et monitoring
 
 ```bash
-# Vérifier les volumes montés
+# Voir l'utilisation des volumes
+kubectl exec webapp -c nginx -- df -h
+
+# Vérifier les permissions des volumes
+kubectl exec webapp -c nginx -- ls -la /data/
+kubectl exec webapp -c log-processor -- ls -la /logs/
+
+# Voir les événements liés aux volumes
 kubectl describe pod webapp
+kubectl get events --field-selector involvedObject.name=webapp
 
-# Voir les events du pod
-kubectl get events --sort-by=.metadata.creationTimestamp
-
-# Vérifier le statut du PVC
-kubectl get pvc uploads-pvc
-
-# Explorer les montages dans les conteneurs
-kubectl exec -it webapp -c nginx -- df -h
+# Vérifier l'état du PVC
+kubectl describe pvc uploads-pvc
 ```
 
-## Points d'attention
+### 5. Nettoyage
 
-1. Vérifier les permissions des fichiers
-2. S'assurer que le storage class est disponible
-3. Monitorer l'utilisation de l'espace disque
-4. Valider le comportement lors des redémarrages
+```bash
+kubectl delete pod webapp
+kubectl delete pvc uploads-pvc
+kubectl delete configmap webapp-config
+```

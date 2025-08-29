@@ -1,21 +1,21 @@
 # Services dans Kubernetes
 
-## Objectifs
+## Exercice Pratique : Exposition et découverte de services
 
-- Comprendre les différents types de Services
-- Créer et configurer des Services
-- Exposer des applications
-- Tester la connectivité
+### Objectif
 
-## Exercice 1 : ClusterIP Service
+Comprendre les différents types de Services et leur utilisation pour exposer des applications.
 
-1. Déployer une application backend :
+### 1. Service ClusterIP
 
 ```yaml
+# backend-app.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
+  labels:
+    app: backend
 spec:
   replicas: 3
   selector:
@@ -28,14 +28,17 @@ spec:
     spec:
       containers:
         - name: backend
-          image: nginx
+          image: nginx:1.29
           ports:
             - containerPort: 80
-```
-
-2. Créer un service ClusterIP :
-
-```yaml
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -49,54 +52,118 @@ spec:
       targetPort: 80
 ```
 
-3. Tester l'accès :
-
 ```bash
-# Créer un pod de test
-kubectl run test-pod --image=busybox -it --rm -- wget -qO- http://backend-service
-
-# Vérifier les endpoints
+kubectl apply -f backend-app.yaml
+kubectl get deployments
+kubectl get services
 kubectl get endpoints backend-service
+kubectl describe service backend-service
 ```
 
-## Exercice 2 : LoadBalancer Service (pour cloud)
+### 2. Scénarios à tester
+
+#### 2.1 Test de connectivité ClusterIP
+
+```bash
+# Tester l'accès depuis un pod temporaire
+kubectl run test-pod --image=busybox:1.28 --restart=Never -- sh -c "wget -qO- http://backend-service"
+kubectl logs test-pod
+kubectl delete pod test-pod
+
+# Vérifier la résolution DNS
+kubectl run test-pod --image=busybox:1.28 --restart=Never -- sh -c "nslookup backend-service"
+kubectl logs test-pod
+kubectl delete pod test-pod
+
+# Vérifier les endpoints
+kubectl get endpoints backend-service -o wide
+```
+
+#### 2.2 Service NodePort
 
 ```yaml
+# nodeport-service.yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: lb-service
+  name: nodeport-service
 spec:
-  type: LoadBalancer
+  type: NodePort
   selector:
-    app: web
+    app: backend
   ports:
     - port: 80
       targetPort: 80
+      nodePort: 30080
 ```
 
-## Commandes utiles
+```bash
+kubectl apply -f nodeport-service.yaml
+kubectl get services nodeport-service
+kubectl describe service nodeport-service
+
+# Tester l'accès via NodePort (si possible depuis votre environnement)
+# curl http://<node-ip>:30080
+echo "NodePort accessible sur le port 30080 de tous les nœuds"
+```
+
+#### 2.3 Service avec sélecteur personnalisé
+
+```yaml
+# custom-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-service
+spec:
+  selector:
+    app: backend
+    version: v1
+  ports:
+    - port: 8080
+      targetPort: 80
+      name: http
+```
 
 ```bash
-# Lister les services
-kubectl get services
+kubectl apply -f custom-service.yaml
+kubectl get service custom-service
 
-# Voir les détails d'un service
-kubectl describe service <service-name>
+# Ajouter le label version aux pods existants
+kubectl label pods -l app=backend version=v1
 
-# Voir les endpoints
+# Vérifier les nouveaux endpoints
+kubectl get endpoints custom-service
+kubectl describe endpoints custom-service
+```
+
+### 3. Service Discovery et debugging
+
+```bash
+# Voir tous les services
+kubectl get services -o wide
+
+# Tester le service discovery DNS
+kubectl run debug-pod --image=busybox:1.28 -- sh -c "nslookup backend-service.default.svc.cluster.local"
+kubectl logs debug-pod
+kubectl delete pod debug-pod
+
+# Vérifier les variables d'environnement de service discovery
+kubectl run env-pod --image=busybox:1.28 -- sh -c "env | grep BACKEND_SERVICE"
+kubectl logs env-pod
+kubectl delete pod env-pod
+
+# Debug des endpoints
 kubectl get endpoints
+kubectl describe endpoints backend-service
 
-# Tester la connectivité
-kubectl run test-pod --image=busybox -it --rm -- wget -qO- http://service-name
-
-# Voir les logs des pods
-kubectl logs -l app=<app-label>
+# Voir les logs des pods backend
+kubectl logs -l app=backend --tail=5
 ```
 
-## Nettoyage
+### 4. Nettoyage
 
 ```bash
-kubectl delete service *
-kubectl delete deployment *
+kubectl delete service backend-service nodeport-service custom-service
+kubectl delete deployment backend
 ```

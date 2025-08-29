@@ -1,81 +1,90 @@
 # Jobs dans Kubernetes
 
-## Objectifs du lab
+## Exercice Pratique : Gestion des Jobs et CronJobs
 
-- Créer et gérer différents types de Jobs
-- Comprendre les paramètres des Jobs
-- Gérer les Jobs parallèles
-- Manipuler les CronJobs
+### Objectif
 
-## Prérequis
+Créer et gérer différents types de Jobs pour comprendre l'exécution de tâches batch dans Kubernetes.
 
-- Accès à un cluster Kubernetes
-- kubectl configuré
-- Namespace dédié pour les exercices
-
-## Exercice 1 : Job simple
-
-1. Créer un Job basique qui affiche la date :
+### 1. Job simple
 
 ```yaml
+# print-date-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: print-date
+  labels:
+    app: print-date
 spec:
   template:
     spec:
       containers:
         - name: print-date
-          image: busybox
-          command: [ "sh", "-c", "date; echo Job terminé!" ]
+          image: busybox:1.28
+          command: [ "sh", "-c", "date; echo 'Job terminé avec succès!'" ]
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "100m"
+            limits:
+              memory: "64Mi"
+              cpu: "200m"
       restartPolicy: Never
 ```
-
-2. Appliquer et vérifier :
 
 ```bash
 kubectl apply -f print-date-job.yaml
 kubectl get jobs
-kubectl get pods
+kubectl get pods -l job-name=print-date
 kubectl logs -l job-name=print-date
+kubectl describe job print-date
 ```
 
-## Exercice 2 : Job avec retry
+### 2. Scénarios à tester
 
-1. Créer un Job qui simule des échecs :
+#### 2.1 Job avec gestion d'erreurs
 
 ```yaml
+# retry-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: retry-job
 spec:
   backoffLimit: 4
+  activeDeadlineSeconds: 120
   template:
     spec:
       containers:
         - name: retry-container
-          image: busybox
+          image: busybox:1.28
           command:
             - sh
             - -c
-            - "if [ $RANDOM -gt 20000 ]; then echo 'Succès!'; else echo 'Échec!' && exit 1; fi"
+            - |
+              echo "Tentative de traitement..."
+              if [ $RANDOM -gt 20000 ]; then 
+                echo "Succès!"
+                exit 0
+              else 
+                echo "Échec simulé!"
+                exit 1
+              fi
       restartPolicy: Never
 ```
 
-2. Observer le comportement :
-
 ```bash
+kubectl apply -f retry-job.yaml
 kubectl get jobs retry-job -w
 kubectl describe job retry-job
+kubectl get pods -l job-name=retry-job
 ```
 
-## Exercice 3 : Job parallèle
-
-1. Créer un Job qui s'exécute en parallèle :
+#### 2.2 Job parallèle avec completion tracking
 
 ```yaml
+# parallel-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -83,72 +92,79 @@ metadata:
 spec:
   completions: 5
   parallelism: 2
+  completionMode: Indexed
   template:
     spec:
       containers:
         - name: worker
-          image: busybox
+          image: busybox:1.28
           command:
             - sh
             - -c
-            - "echo Processing item $RANDOM; sleep 5"
+            - |
+              index=${JOB_COMPLETION_INDEX:-0}
+              echo "Worker $index: Starting processing"
+              sleep $((3 + RANDOM % 5))
+              echo "Worker $index: Processing completed"
       restartPolicy: Never
 ```
 
-2. Observer l'exécution parallèle :
-
 ```bash
-kubectl get pods -w
-kubectl get jobs parallel-job
+kubectl apply -f parallel-job.yaml
+kubectl get pods -l job-name=parallel-job -w
+kubectl logs -l job-name=parallel-job --prefix=true
 ```
 
-## Exercice 4 : CronJob
-
-1. Créer un CronJob qui s'exécute toutes les minutes :
+#### 2.3 CronJob avec gestion d'historique
 
 ```yaml
+# hello-cron.yaml
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: hello-cron
 spec:
-  schedule: "*/1 * * * *"
+  schedule: "*/2 * * * *"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
+  concurrencyPolicy: Allow
+  startingDeadlineSeconds: 60
   jobTemplate:
     spec:
       template:
         spec:
           containers:
             - name: hello
-              image: busybox
+              image: busybox:1.28
               command:
                 - sh
                 - -c
-                - "echo 'Exécution à' $(date)"
+                - |
+                  echo "=== CronJob Execution ==="
+                  echo "Date: $(date)"
+                  echo "Hostname: $(hostname)"
+                  echo "========================="
           restartPolicy: Never
 ```
 
-2. Observer les exécutions :
-
 ```bash
+kubectl apply -f hello-cron.yaml
 kubectl get cronjobs
-kubectl get jobs
-kubectl get pods
+kubectl get jobs --watch
 ```
 
-## Exercice 5 : Job de traitement de données
-
-1. Créer un Job qui simule le traitement de données :
+### 3. Job de traitement de données avancé
 
 ```yaml
+# data-processor.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: data-processor
 spec:
-  completions: 3
+  completions: 4
   parallelism: 2
+  completionMode: Indexed
   template:
     spec:
       containers:
@@ -161,58 +177,65 @@ spec:
               import time
               import random
               import os
+              import sys
 
-              job_id = os.environ.get('JOB_COMPLETION_INDEX', '0')
-              print(f"Starting processing for batch {job_id}")
+              job_index = os.environ.get('JOB_COMPLETION_INDEX', '0')
+              print(f"[Batch {job_index}] Starting data processing...")
 
-              # Simuler un traitement
-              processing_time = random.randint(3, 8)
-              time.sleep(processing_time)
+              # Simuler différents types de traitement
+              tasks = ['validation', 'transformation', 'aggregation', 'export']
+              task = tasks[int(job_index)]
 
-              print(f"Batch {job_id} completed in {processing_time} seconds")
+              print(f"[Batch {job_index}] Executing {task} task")
+
+              # Simuler un temps de traitement variable
+              processing_time = random.randint(5, 15)
+              for i in range(processing_time):
+                  time.sleep(1)
+                  if i % 3 == 0:
+                      progress = (i + 1) / processing_time * 100
+                      print(f"[Batch {job_index}] Progress: {progress:.1f}%")
+
+              print(f"[Batch {job_index}] {task} completed successfully!")
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
       restartPolicy: Never
 ```
 
-2. Suivre l'avancement :
-
 ```bash
+kubectl apply -f data-processor.yaml
 kubectl get jobs data-processor -w
-kubectl logs -l job-name=data-processor
+kubectl logs -l job-name=data-processor --prefix=true -f
 ```
 
-## Nettoyage
-
-Supprimer toutes les ressources créées :
+### 4. Gestion des Jobs
 
 ```bash
+# Lister tous les jobs
+kubectl get jobs
+
+# Voir l'état détaillé d'un job
+kubectl describe job parallel-job
+
+# Supprimer un job spécifique
 kubectl delete job print-date
-kubectl delete job retry-job
-kubectl delete job parallel-job
-kubectl delete job data-processor
-kubectl delete cronjob hello-cron
+
+# Supprimer les jobs terminés automatiquement
+kubectl delete jobs --field-selector status.successful=1
+
+# Suspendre/reprendre un cronjob
+kubectl patch cronjob hello-cron -p '{"spec":{"suspend":true}}'
+kubectl patch cronjob hello-cron -p '{"spec":{"suspend":false}}'
 ```
 
-## Points clés à retenir
-
-1. Les Jobs sont utiles pour les tâches ponctuelles
-2. backoffLimit contrôle le nombre de tentatives
-3. completions et parallelism permettent de gérer des tâches parallèles
-4. Les CronJobs permettent d'automatiser l'exécution périodique
-5. Toujours définir une politique de rétention pour les jobs terminés
-
-## Exercices bonus
-
-1. Modifier le CronJob pour qu'il garde plus d'historique
-2. Créer un Job avec un timeout (activeDeadlineSeconds)
-3. Créer un Job qui utilise des variables d'environnement
-4. Implémenter un Job avec une logique de traitement par lots
-
-## Troubleshooting
-
-En cas de problèmes :
+### 5. Nettoyage
 
 ```bash
-kubectl describe job <nom-du-job>
-kubectl get events
-kubectl logs <pod-name>
+kubectl delete job retry-job parallel-job data-processor
+kubectl delete cronjob hello-cron
 ```

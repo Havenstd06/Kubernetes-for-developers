@@ -1,282 +1,360 @@
-# Webhook d'admission Kubernetes
+# Lab : Admission Control avec Pod Security Standards
 
-## Objectif
+## Objectifs
 
-Créer un webhook d'admission qui :
+- Comprendre le contrôle d'admission dans Kubernetes
+- Implémenter des politiques de sécurité avec Pod Security Standards
+- Tester la validation et le rejet de pods non conformes
+- Observer le comportement des admission controllers natifs
 
-1. Valide que tous les pods ont des limites de ressources définies
-2. Ajoute automatiquement des labels de monitoring
-3. Force l'utilisation d'images provenant d'un registry approuvé
+## Exercice 1 : Configuration des namespaces de sécurité
 
-## Étape 1 : création des certificats
-
-```bash
-# Création d'une autorité de certification
-openssl genrsa -out ca.key 2048
-openssl req -new -x509 -days 365 -key ca.key -out ca.crt -subj "/CN=Admission CA"
-
-# Création des certificats pour le webhook
-openssl genrsa -out webhook-tls.key 2048
-openssl req -new -key webhook-tls.key -out webhook-tls.csr -subj "/CN=admission-webhook.default.svc"
-
-# Création du fichier de configuration pour le certificat
-cat > webhook-csr.conf <<EOF
-[req]
-req_extensions = v3_req
-distinguished_name = req_distinguished_name
-
-[req_distinguished_name]
-
-[v3_req]
-basicConstraints = CA:FALSE
-keyUsage = nonRepudiation, digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-subjectAltName = @alt_names
-
-[alt_names]
-DNS.1 = admission-webhook
-DNS.2 = admission-webhook.default
-DNS.3 = admission-webhook.default.svc
-EOF
-
-# Signature du certificat
-openssl x509 -req -in webhook-tls.csr -CA ca.crt -CAkey ca.key \
-    -CAcreateserial -out webhook-tls.crt -days 365 \
-    -extensions v3_req -extfile webhook-csr.conf
-```
-
-## Étape 2 : Création du service et du déploiement
+### 1.1 Créer des namespaces avec différents niveaux
 
 ```yaml
-# webhook-deployment.yaml
+# security-namespaces.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: privileged-ns
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: baseline-ns
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: restricted-ns
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+```
+
+### 1.2 Appliquer et vérifier
+
+```bash
+kubectl apply -f security-namespaces.yaml
+kubectl get namespaces --show-labels | grep "pod-security"
+```
+
+## Exercice 2 : Pod privilégié (violation de sécurité)
+
+### 2.1 Créer un pod privilégié
+
+```yaml
+# privileged-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-pod
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+      securityContext:
+        privileged: true
+```
+
+### 2.2 Tester dans différents namespaces
+
+```bash
+# Dans privileged-ns (doit réussir)
+kubectl apply -f privileged-pod.yaml -n privileged-ns
+
+# Dans baseline-ns (doit être rejeté)
+kubectl apply -f privileged-pod.yaml -n baseline-ns
+
+# Dans restricted-ns (doit être rejeté)
+kubectl apply -f privileged-pod.yaml -n restricted-ns
+```
+
+## Exercice 3 : Pod conforme au niveau restricted
+
+### 3.1 Créer un pod strictement conforme
+
+```yaml
+# restricted-compliant-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: nginx
+      image: nginxinc/nginx-unprivileged:alpine
+      ports:
+        - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-run
+          mountPath: /var/run
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-log
+          mountPath: /var/log/nginx
+  volumes:
+    - name: tmp
+      emptyDir: { }
+    - name: var-run
+      emptyDir: { }
+    - name: var-cache
+      emptyDir: { }
+    - name: var-log
+      emptyDir: { }
+```
+
+### 3.2 Tester la conformité
+
+```bash
+# Déployer dans restricted-ns (doit réussir)
+kubectl apply -f restricted-compliant-pod.yaml -n restricted-ns
+
+# Vérifier le déploiement
+kubectl get pod secure-pod -n restricted-ns
+kubectl describe pod secure-pod -n restricted-ns
+```
+
+## Exercice 4 : LimitRange (admission controller natif)
+
+### 4.1 Créer un LimitRange
+
+```yaml
+# limit-range.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: resource-limits
+  namespace: baseline-ns
+spec:
+  limits:
+    - default:
+        memory: "256Mi"
+        cpu: "200m"
+      defaultRequest:
+        memory: "128Mi"
+        cpu: "100m"
+      max:
+        memory: "1Gi"
+        cpu: "1"
+      min:
+        memory: "64Mi"
+        cpu: "50m"
+      type: Container
+```
+
+### 4.2 Tester l'application automatique des limites
+
+```yaml
+# no-limits-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-limits-pod
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+```
+
+```bash
+# Appliquer le LimitRange
+kubectl apply -f limit-range.yaml
+
+# Déployer un pod sans limites
+kubectl apply -f no-limits-pod.yaml -n baseline-ns
+
+# Vérifier que les limites ont été appliquées automatiquement
+kubectl describe pod no-limits-pod -n baseline-ns | grep -A 10 "Limits:"
+```
+
+### 4.3 Tester le rejet pour excès de ressources
+
+```yaml
+# excessive-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: excessive-pod
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+      resources:
+        requests:
+          memory: "2Gi"  # Dépasse max: 1Gi
+```
+
+```bash
+# Tenter de déployer (doit être rejeté)
+kubectl apply -f excessive-pod.yaml -n baseline-ns
+```
+
+## Exercice 5 : ResourceQuota (admission controller)
+
+### 5.1 Créer un quota strict
+
+```yaml
+# resource-quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: strict-quota
+  namespace: baseline-ns
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: "1Gi"
+    limits.cpu: "2"
+    limits.memory: "2Gi"
+    pods: "2"
+```
+
+### 5.2 Tester le respect du quota
+
+```yaml
+# quota-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: admission-webhook
+  name: quota-test
+  namespace: baseline-ns
 spec:
-  replicas: 1
+  replicas: 3  # Dépasse pods: "2"
   selector:
     matchLabels:
-      app: admission-webhook
+      app: quota-test
   template:
     metadata:
       labels:
-        app: admission-webhook
+        app: quota-test
     spec:
       containers:
-        - name: webhook
-          image: admission-webhook:v1  # Image à construire
-          ports:
-            - containerPort: 8443
-          volumeMounts:
-            - name: webhook-certs
-              mountPath: /etc/webhook/certs
-              readOnly: true
-      volumes:
-        - name: webhook-certs
-          secret:
-            secretName: webhook-certs
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: admission-webhook
-spec:
-  ports:
-    - port: 443
-      targetPort: 8443
-  selector:
-    app: admission-webhook
+        - name: nginx
+          image: nginx
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
 ```
-
-## Étape 3 : Implémentation du webhook (Go)
-
-```go
-package main
-
-import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    admissionv1 "k8s.io/api/admission/v1"
-    corev1 "k8s.io/api/core/v1"
-    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-func validatePod(pod *corev1.Pod) (bool, string) {
-    // Vérification des limites de ressources
-    for _, container := range pod.Spec.Containers {
-        if container.Resources.Limits == nil {
-            return false, fmt.Sprintf("Container %s doit avoir des limites de ressources", container.Name)
-        }
-    }
-
-    // Vérification du registry
-    for _, container := range pod.Spec.Containers {
-        if !strings.HasPrefix(container.Image, "approved-registry.com/") {
-            return false, "Seules les images de approved-registry.com sont autorisées"
-        }
-    }
-
-    return true, ""
-}
-
-func mutatePod(pod *corev1.Pod) []patchOperation {
-    var patches []patchOperation
-
-    // Ajout des labels de monitoring
-    if pod.Labels == nil {
-        pod.Labels = map[string]string{}
-    }
-    
-    patches = append(patches, patchOperation{
-        Op:    "add",
-        Path:  "/metadata/labels/monitoring",
-        Value: "enabled",
-    })
-
-    return patches
-}
-
-func handleAdmission(w http.ResponseWriter, r *http.Request) {
-    // Lecture du body
-    var admissionReview admissionv1.AdmissionReview
-    if err := json.NewDecoder(r.Body).Decode(&admissionReview); err != nil {
-        http.Error(w, "Erreur de décodage", http.StatusBadRequest)
-        return
-    }
-
-    // Désérialisation du pod
-    pod := &corev1.Pod{}
-    if err := json.Unmarshal(admissionReview.Request.Object.Raw, pod); err != nil {
-        http.Error(w, "Erreur de parsing du pod", http.StatusBadRequest)
-        return
-    }
-
-    // Validation
-    allowed, message := validatePod(pod)
-    
-    // Mutation si la validation passe
-    var patches []patchOperation
-    if allowed {
-        patches = mutatePod(pod)
-    }
-
-    // Préparation de la réponse
-    response := admissionv1.AdmissionResponse{
-        Allowed: allowed,
-        Result: &metav1.Status{
-            Message: message,
-        },
-    }
-
-    // Ajout des patches si nécessaire
-    if allowed && len(patches) > 0 {
-        patchBytes, _ := json.Marshal(patches)
-        response.Patch = patchBytes
-        pt := admissionv1.PatchTypeJSONPatch
-        response.PatchType = &pt
-    }
-
-    // Envoi de la réponse
-    admissionReview.Response = &response
-    json.NewEncoder(w).Encode(admissionReview)
-}
-```
-
-## Étape 4 : Configuration du webhook dans Kubernetes
-
-```yaml
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingWebhookConfiguration
-metadata:
-  name: pod-policy
-webhooks:
-  - name: pod-policy.default.svc
-    rules:
-      - apiGroups: [ "" ]
-        apiVersions: [ "v1" ]
-        operations: [ "CREATE" ]
-        resources: [ "pods" ]
-        scope: "Namespaced"
-    clientConfig:
-      service:
-        name: admission-webhook
-        namespace: default
-        path: "/validate"
-      caBundle: ${CA_BUNDLE}
-    admissionReviewVersions: [ "v1" ]
-    sideEffects: None
-    timeoutSeconds: 5
-
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: pod-mutating
-webhooks:
-  - name: pod-mutating.default.svc
-    rules:
-      - apiGroups: [ "" ]
-        apiVersions: [ "v1" ]
-        operations: [ "CREATE" ]
-        resources: [ "pods" ]
-        scope: "Namespaced"
-    clientConfig:
-      service:
-        name: admission-webhook
-        namespace: default
-        path: "/mutate"
-      caBundle: ${CA_BUNDLE}
-    admissionReviewVersions: [ "v1" ]
-    sideEffects: None
-    timeoutSeconds: 5
-```
-
-## Étape 5 : Tests
-
-### Test de validation
-
-```yaml
-# test-pod-invalid.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-pod
-spec:
-  containers:
-    - name: nginx
-      image: unapproved-registry.com/nginx  # Devrait être rejeté
-```
-
-### Test de mutation
-
-```yaml
-# test-pod-valid.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-pod
-spec:
-  containers:
-    - name: nginx
-      image: approved-registry.com/nginx
-      resources:
-        limits:
-          cpu: "200m"
-          memory: "256Mi"
-```
-
-## Vérification
 
 ```bash
-# Test du pod invalide
-kubectl apply -f test-pod-invalid.yaml
+# Appliquer le quota
+kubectl apply -f resource-quota.yaml
 
-# Test du pod valide
-kubectl apply -f test-pod-valid.yaml
+# Tenter le déploiement (seulement 2 pods créés)
+kubectl apply -f quota-deployment.yaml
 
-# Vérification des labels ajoutés
-kubectl get pod test-pod -o jsonpath='{.metadata.labels}'
+# Vérifier les quotas utilisés
+kubectl describe quota strict-quota -n baseline-ns
+kubectl get pods -n baseline-ns
 ```
+
+## Exercice 6 : Modes warn et audit
+
+### 6.1 Namespace avec mode warn uniquement
+
+```yaml
+# warn-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: warn-only-ns
+  labels:
+    pod-security.kubernetes.io/warn: restricted
+    # Pas de mode enforce = pod accepté avec warning
+```
+
+### 6.2 Tester avec un pod non conforme
+
+```bash
+# Appliquer le namespace
+kubectl apply -f warn-namespace.yaml
+
+# Déployer un pod privilégié (accepté mais avec warning)
+kubectl apply -f privileged-pod.yaml -n warn-only-ns
+
+# Observer le warning mais pas de rejet
+kubectl get pod privileged-pod -n warn-only-ns
+```
+
+## Diagnostic et troubleshooting
+
+```bash
+# Voir les admission controllers configurés
+kubectl get validatingwebhookconfiguration
+kubectl get mutatingwebhookconfiguration
+
+# Pour EKS, vérifier Pod Security Admission (pas visible via API)
+kubectl get namespace kube-system -o yaml | grep pod-security
+
+# Tester directement l'admission
+kubectl apply --dry-run=server -f privileged-pod.yaml -n restricted-ns
+```
+
+## Validation des apprentissages
+
+### Tests de compréhension
+
+1. Créer un pod qui viole exactement une règle baseline
+2. Configurer un namespace en mode audit seulement
+3. Expliquer pourquoi kube-system est souvent exempté
+4. Identifier les différences entre warn, audit et enforce
+
+### Critères de validation
+
+- Le pod privilégié est rejeté dans baseline/restricted
+- Le pod conforme fonctionne dans tous les namespaces
+- Les LimitRange appliquent des valeurs par défaut
+- Les ResourceQuota empêchent les dépassements
+- Les warnings apparaissent en mode warn
+
+## Nettoyage complet
+
+```bash
+# Supprimer les pods par nom (pas par fichier)
+kubectl delete pod privileged-pod -n privileged-ns --ignore-not-found
+kubectl delete pod secure-pod -n restricted-ns --ignore-not-found
+kubectl delete pod no-limits-pod -n baseline-ns --ignore-not-found
+kubectl delete pod excessive-pod -n baseline-ns --ignore-not-found
+
+# Supprimer les quotas et limits (avant les namespaces)
+kubectl delete limitrange resource-limits -n baseline-ns --ignore-not-found
+kubectl delete resourcequota strict-quota -n baseline-ns --ignore-not-found
+kubectl delete deployment quota-test -n baseline-ns --ignore-not-found
+
+# Supprimer les namespaces (supprime automatiquement tout le contenu)
+kubectl delete namespace privileged-ns baseline-ns restricted-ns warn-only-ns --ignore-not-found
+```
+
+## Points clés
+
+1. **Pod Security Standards** : GA depuis v1.25, remplace PodSecurityPolicy
+2. **Trois niveaux** : privileged (permissif) → baseline → restricted (strict)
+3. **Trois modes** : enforce (bloque), warn (avertit), audit (log)
+4. **Configuration** : Via des labels sur les namespaces
+5. **Production** : Privilégier restricted sauf justification technique

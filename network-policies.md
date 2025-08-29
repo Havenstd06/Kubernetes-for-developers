@@ -1,14 +1,15 @@
-# NetworkPolicies
+# NetworkPolicies dans Kubernetes
 
-## Objectif
+## Exercice Pratique : Contrôle du trafic réseau
+
+### Objectif
 
 Comprendre les NetworkPolicies en contrôlant le trafic entre deux pods.
 
-## Exercice 1 : Configuration initiale
-
-1. Créer le fichier `app.yaml` :
+### 1. Configuration initiale
 
 ```yaml
+# app.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -18,7 +19,9 @@ metadata:
 spec:
   containers:
     - name: nginx
-      image: nginx
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
 ---
 apiVersion: v1
 kind: Service
@@ -29,6 +32,7 @@ spec:
     app: web-a
   ports:
     - port: 80
+      targetPort: 80
 ---
 apiVersion: v1
 kind: Pod
@@ -39,7 +43,9 @@ metadata:
 spec:
   containers:
     - name: nginx
-      image: nginx
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
 ---
 apiVersion: v1
 kind: Service
@@ -50,26 +56,30 @@ spec:
     app: web-b
   ports:
     - port: 80
+      targetPort: 80
 ```
-
-2. Déployer et tester :
 
 ```bash
 # Déployer les applications
 kubectl apply -f app.yaml
+kubectl get pods
+kubectl get services
 
-# Test depuis web-a vers web-b
-kubectl exec web-a -- curl web-b-svc
+# Attendre que les pods soient prêts
+kubectl wait --for=condition=Ready pod/web-a --timeout=60s
+kubectl wait --for=condition=Ready pod/web-b --timeout=60s
 
-# Test depuis web-b vers web-a
-kubectl exec web-b -- curl web-a-svc
+# Test de connectivité initiale
+kubectl exec web-a -- curl -s --max-time 10 web-b-svc
+kubectl exec web-b -- curl -s --max-time 10 web-a-svc
 ```
 
-## Exercice 2 : Bloquer le trafic
+### 2. Scénarios à tester
 
-1. Créer le fichier `deny-all.yaml` :
+#### 2.1 Bloquer tout le trafic
 
 ```yaml
+# deny-all.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -78,23 +88,23 @@ spec:
   podSelector: { }
   policyTypes:
     - Ingress
+    - Egress
 ```
-
-2. Appliquer et tester :
 
 ```bash
-# Appliquer la politique
+# Appliquer la politique de déni total
 kubectl apply -f deny-all.yaml
+kubectl get networkpolicies
 
-# Test (doit échouer)
-kubectl exec web-a -- curl web-b-svc
+# Tester (doit échouer)
+kubectl exec web-a -- curl -s --max-time 5 web-b-svc || echo "Connection blocked as expected"
+kubectl exec web-b -- curl -s --max-time 5 web-a-svc || echo "Connection blocked as expected"
 ```
 
-## Exercice 3 : Autoriser un trafic spécifique
-
-1. Créer le fichier `allow-a-to-b.yaml` :
+#### 2.2 Autoriser un trafic spécifique
 
 ```yaml
+# allow-a-to-b.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -103,38 +113,129 @@ spec:
   podSelector:
     matchLabels:
       app: web-b
+  policyTypes:
+    - Ingress
   ingress:
     - from:
         - podSelector:
             matchLabels:
               app: web-a
+      ports:
+        - protocol: TCP
+          port: 80
 ```
 
-2. Appliquer et tester :
-
 ```bash
-# Appliquer la politique
+# Appliquer la politique d'autorisation
 kubectl apply -f allow-a-to-b.yaml
+kubectl describe networkpolicy allow-a-to-b
 
 # Test de web-a vers web-b (doit réussir)
-kubectl exec web-a -- curl web-b-svc
+kubectl exec web-a -- curl -s --max-time 10 web-b-svc
 
-# Test de web-b vers web-a (doit échouer)
-kubectl exec web-b -- curl web-a-svc
+# Test de web-b vers web-a (doit toujours échouer)
+kubectl exec web-b -- curl -s --max-time 5 web-a-svc || echo "Connection still blocked"
 ```
 
-## Nettoyage
+#### 2.3 Autoriser le trafic bidirectionnel
+
+```yaml
+# allow-bidirectional.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-a-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: web-a
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web-b
+      ports:
+        - protocol: TCP
+          port: 80
+    - to: [ ]
+      ports:
+        - protocol: UDP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-a-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: web-a
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web-b
+      ports:
+        - protocol: TCP
+          port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-b-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: web-b
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web-a
+      ports:
+        - protocol: TCP
+          port: 80
+    - to: [ ]
+      ports:
+        - protocol: UDP
+          port: 53
+```
 
 ```bash
-# Supprimer toutes les ressources créées
-kubectl delete -f app.yaml
-kubectl delete networkpolicy deny-all
-kubectl delete networkpolicy allow-a-to-b
+# Appliquer les politiques bidirectionnelles
+kubectl apply -f allow-bidirectional.yaml
+
+# Tester dans les deux sens
+kubectl exec web-a -- curl -s --max-time 10 web-b-svc
+kubectl exec web-b -- curl -s --max-time 10 web-a-svc
 ```
 
-## Points à retenir
+### 3. Debug et vérification
 
-- Par défaut, tout trafic est autorisé
-- Une NetworkPolicy permet de contrôler le trafic
-- Les sélecteurs de pods utilisent les labels
-- Les politiques sont additives
+```bash
+# Lister toutes les NetworkPolicies
+kubectl get networkpolicies
+
+# Voir les détails d'une politique
+kubectl describe networkpolicy deny-all
+kubectl describe networkpolicy allow-a-to-b
+
+# Vérifier les labels des pods
+kubectl get pods --show-labels
+
+# Voir les événements
+kubectl get events --sort-by=.metadata.creationTimestamp
+```
+
+### 4. Nettoyage
+
+```bash
+kubectl delete -f app.yaml
+kubectl delete networkpolicy deny-all allow-a-to-b allow-web-a-egress allow-web-a-ingress allow-web-b-egress 
+```

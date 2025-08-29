@@ -1,77 +1,94 @@
 # Multi-Container Pods dans Kubernetes
 
-## Exercice Pratique : Application web avec sidecar de logging
+## Exercice Pratique : Partage de ressources entre conteneurs
 
 ### Objectif
 
-Créer un pod multi-conteneurs contenant :
+Comprendre qu'un pod peut contenir plusieurs conteneurs qui partagent le même réseau et les mêmes volumes.
 
-- Une application web simple (nginx)
-- Un sidecar container qui surveille et traite les logs d'accès
-- Un volume partagé pour les logs
-
-### Étapes
-
-1. **Créer le manifest du pod**
+### 1. Pod avec partage de volume
 
 ```yaml
+# multi-container-pod.yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: web-with-logging
+  name: multi-container-pod
 spec:
   containers:
-    - name: nginx
-      image: nginx:latest
+    - name: container-1
+      image: busybox:1.28
+      command: [ "/bin/sh", "-c" ]
+      args:
+        - |
+          echo "Container 1 started" > /shared/from-container-1.txt
+          while true; do
+            echo "$(date): Hello from container 1" >> /shared/from-container-1.txt
+            sleep 30
+          done
       volumeMounts:
-        - name: logs-volume
-          mountPath: /var/log/nginx
-    - name: log-collector
-      image: busybox
-      command: [ "/bin/sh", "-c", "tail -f /var/log/nginx/access.log" ]
+        - name: shared-volume
+          mountPath: /shared
+    - name: container-2
+      image: busybox:1.28
+      command: [ "/bin/sh", "-c" ]
+      args:
+        - |
+          sleep 10
+          while true; do
+            echo "=== Container 2 reading files ==="
+            ls -la /shared/
+            if [ -f /shared/from-container-1.txt ]; then
+              echo "Content from container 1:"
+              cat /shared/from-container-1.txt
+            fi
+            sleep 30
+          done
       volumeMounts:
-        - name: logs-volume
-          mountPath: /var/log/nginx
+        - name: shared-volume
+          mountPath: /shared
   volumes:
-    - name: logs-volume
+    - name: shared-volume
       emptyDir: { }
 ```
 
-2. **Tâches à réaliser**
-    - Déployer le pod
-    - Vérifier que les deux conteneurs sont en cours d'exécution
-    - Générer du trafic vers nginx
-    - Observer les logs dans le sidecar
-    - Modifier la configuration pour ajouter des filtres de logs
-
-3. **Commandes utiles**
-
 ```bash
-# Déployer le pod
-kubectl apply -f web-with-logging.yaml
-
-# Vérifier l'état des conteneurs
-kubectl get pod web-with-logging
-kubectl describe pod web-with-logging
-
-# Port-forward pour accéder à nginx
-kubectl port-forward web-with-logging 8080:80
-
-# Générer du trafic (dans un autre terminal)
-curl http://localhost:8080
-
-# Observer les logs du sidecar
-kubectl logs web-with-logging -c log-collector -f
+kubectl apply -f multi-container-pod.yaml
+kubectl get pod multi-container-pod
+kubectl describe pod multi-container-pod
 ```
 
-4. **Bonus**
-    - Ajouter un init container qui configure nginx avant le démarrage
-    - Modifier le sidecar pour compter les codes de statut HTTP
-    - Implémenter une probe de readiness pour nginx
+### 2. Tester le partage de volumes
 
-### Critères de réussite
+```bash
+# Voir les logs de chaque conteneur
+kubectl logs multi-container-pod -c container-1
+kubectl logs multi-container-pod -c container-2
 
-- Les deux conteneurs doivent être en état "Running"
-- Le sidecar doit afficher les logs d'accès nginx en temps réel
-- Les logs doivent être persistent entre les redémarrages des conteneurs
-- L'application doit être accessible via port-forward
+# Vérifier que les fichiers sont partagés
+kubectl exec multi-container-pod -c container-1 -- ls -la /shared/
+kubectl exec multi-container-pod -c container-2 -- ls -la /shared/
+kubectl exec multi-container-pod -c container-2 -- cat /shared/from-container-1.txt
+
+# Tester l'écriture depuis container-2
+kubectl exec multi-container-pod -c container-2 -- sh -c "echo 'Hello from container 2' > /shared/from-container-2.txt"
+kubectl exec multi-container-pod -c container-1 -- cat /shared/from-container-2.txt
+```
+
+### 3. Tester le partage réseau
+
+```bash
+# Vérifier que les conteneurs partagent la même IP
+kubectl exec multi-container-pod -c container-1 -- hostname -i
+kubectl exec multi-container-pod -c container-2 -- hostname -i
+
+# Vérifier que les conteneurs voient les mêmes interfaces réseau
+kubectl exec multi-container-pod -c container-1 -- ip addr show
+kubectl exec multi-container-pod -c container-2 -- ip addr show
+```
+
+### 4. Nettoyage
+
+```bash
+kubectl delete pod multi-container-pod
+```

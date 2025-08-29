@@ -1,85 +1,53 @@
-# Les Hooks Lifecycle : preStop et postStart
+# Les Hooks Lifecycle dans Kubernetes
 
-## Introduction
+## Exercice Pratique : postStart et preStop Hooks
 
-Les hooks lifecycle permettent d'exécuter du code à des moments spécifiques du cycle de vie d'un conteneur :
+### Objectif
 
-- `postStart` : exécuté immédiatement après la création du conteneur
-- `preStop` : exécuté juste avant la terminaison du conteneur
+Comprendre et utiliser les hooks lifecycle pour contrôler les événements du cycle de vie des conteneurs.
 
-## Le Hook postStart
-
-### Caractéristiques
-
-- Exécuté de manière asynchrone avec l'ENTRYPOINT du conteneur
-- Pas de garantie d'ordre d'exécution avec l'ENTRYPOINT
-- En cas d'échec, le conteneur est tué
-
-### Cas d'usage typiques
-
-- Initialisation d'une configuration
-- Enregistrement du service
-- Vérification de prérequis
-- Configuration de l'environnement
-
-### Exemple simple
+### 1. Hook postStart basique
 
 ```yaml
+# poststart-demo.yaml
 apiVersion: v1
 kind: Pod
 metadata:
   name: poststart-demo
+  labels:
+    app: poststart-demo
 spec:
   containers:
     - name: web
-      image: nginx
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
       lifecycle:
         postStart:
           exec:
-            command: [ "/bin/sh", "-c", "echo Hello from postStart > /usr/share/message" ]
+            command: [ "/bin/sh", "-c", "echo \"Container started at $(date)\" > /usr/share/nginx/html/startup.html" ]
 ```
 
-### Exemple avancé avec notification
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: poststart-notification
-spec:
-  containers:
-    - name: app
-      image: nginx
-      lifecycle:
-        postStart:
-          exec:
-            command:
-              - /bin/sh
-              - -c
-              - |
-                curl -X POST -H "Content-Type: application/json" \
-                -d '{"text":"Container started successfully"}' \
-                http://notification-service:8080/notify
+```bash
+kubectl apply -f poststart-demo.yaml
+kubectl get pod poststart-demo
+kubectl describe pod poststart-demo
+kubectl exec poststart-demo -- cat /usr/share/nginx/html/startup.html
 ```
 
-## Le Hook preStop
+### 2. Scénarios à tester
 
-### Caractéristiques
-
-- Bloquant : le conteneur n'est pas terminé tant que le hook n'est pas terminé
-- Inclus dans le délai de grâce de terminaison du pod
-- Exécuté avant l'envoi du signal SIGTERM
-
-### Cas d'usage typiques
-
-- Arrêt gracieux des connexions
-- Sauvegarde de l'état
-- Notification de désenregistrement
-- Nettoyage des ressources
-
-### Exemple d'arrêt gracieux Nginx
+#### 2.1 Hook preStop pour arrêt gracieux
 
 ```yaml
+# prestop-nginx.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -87,26 +55,52 @@ metadata:
 spec:
   containers:
     - name: nginx
-      image: nginx
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
       lifecycle:
         preStop:
           exec:
-            command: [ "/bin/sh", "-c", "nginx -s quit && while killall -0 nginx; do sleep 1; done" ]
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "Graceful shutdown initiated at $(date)" >> /var/log/shutdown.log
+                nginx -s quit
+                while pgrep nginx > /dev/null; do 
+                  echo "Waiting for nginx to stop..."
+                  sleep 1
+                done
+                echo "Nginx stopped gracefully at $(date)" >> /var/log/shutdown.log
+  terminationGracePeriodSeconds: 30
 ```
 
-### Exemple complet avec postStart et preStop
+```bash
+kubectl apply -f prestop-nginx.yaml
+kubectl get pod prestop-nginx
+
+# Tester l'arrêt gracieux
+kubectl delete pod prestop-nginx --grace-period=30
+kubectl get pod prestop-nginx -w
+```
+
+#### 2.2 Hooks combinés avec logging
 
 ```yaml
+# lifecycle-complete.yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: lifecycle-demo
+  name: lifecycle-complete
 spec:
   containers:
-    - name: lifecycle-demo
-      image: nginx
+    - name: app
+      image: nginx:1.29
       ports:
         - containerPort: 80
+      volumeMounts:
+        - name: log-volume
+          mountPath: /var/log/app
       lifecycle:
         postStart:
           exec:
@@ -114,92 +108,114 @@ spec:
               - /bin/sh
               - -c
               - |
-                echo "Service starting at $(date)" >> /var/log/startup.log
-                curl -X POST http://monitoring:8080/service/start
+                echo "[$(date)] PostStart: Container initialization started" >> /var/log/app/lifecycle.log
+                # Simuler une initialisation
+                sleep 2
+                echo "[$(date)] PostStart: Application ready" >> /var/log/app/lifecycle.log
+                echo "Application initialized successfully" > /usr/share/nginx/html/status.html
         preStop:
           exec:
             command:
               - /bin/sh
               - -c
               - |
-                echo "Service stopping at $(date)" >> /var/log/shutdown.log
-                curl -X POST http://monitoring:8080/service/stop
-                sleep 5 # Permettre aux requêtes en cours de se terminer
+                echo "[$(date)] PreStop: Shutdown signal received" >> /var/log/app/lifecycle.log
+                echo "Application shutting down" > /usr/share/nginx/html/status.html
+                # Arrêt gracieux
+                nginx -s quit
+                # Attendre l'arrêt complet
+                timeout=10
+                while pgrep nginx > /dev/null && [ $timeout -gt 0 ]; do
+                  echo "[$(date)] PreStop: Waiting for shutdown..." >> /var/log/app/lifecycle.log
+                  sleep 1
+                  timeout=$((timeout-1))
+                done
+                echo "[$(date)] PreStop: Shutdown complete" >> /var/log/app/lifecycle.log
+  terminationGracePeriodSeconds: 20
+  volumes:
+    - name: log-volume
+      emptyDir: { }
 ```
 
-## Méthodes d'Handlers
+```bash
+kubectl apply -f lifecycle-complete.yaml
+kubectl get pod lifecycle-complete
 
-Les hooks supportent trois types d'handlers :
+# Vérifier les logs du postStart
+kubectl exec lifecycle-complete -- cat /var/log/app/lifecycle.log
+kubectl exec lifecycle-complete -- cat /usr/share/nginx/html/status.html
 
-### 1. Exec
-
-```yaml
-lifecycle:
-  postStart:
-    exec:
-      command: [ "/bin/sh", "-c", "echo Hello" ]
+# Tester le preStop
+kubectl delete pod lifecycle-complete
+kubectl logs pod lifecycle-complete
 ```
 
-### 2. HTTP
+#### 2.3 Hook avec gestion d'erreurs
 
 ```yaml
-lifecycle:
-  postStart:
-    httpGet:
-      path: /health
-      port: 8080
-      httpHeaders:
-        - name: Custom-Header
-          value: value
+# lifecycle-error-handling.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lifecycle-error-test
+spec:
+  containers:
+    - name: app
+      image: nginx:1.29
+      lifecycle:
+        postStart:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                # Test avec possibilité d'échec
+                if [ "$((RANDOM % 2))" -eq 0 ]; then
+                  echo "PostStart succeeded" > /tmp/poststart-result
+                  exit 0
+                else
+                  echo "PostStart failed" > /tmp/poststart-result
+                  exit 1
+                fi
 ```
 
-### 3. TCP Socket
-
-```yaml
-lifecycle:
-  postStart:
-    tcpSocket:
-      port: 8080
+```bash
+kubectl apply -f lifecycle-error-handling.yaml
+kubectl get pod lifecycle-error-test
+kubectl describe pod lifecycle-error-test
+kubectl exec lifecycle-error-test -- cat /tmp/poststart-result || echo "Pod may have failed"
 ```
 
-## Bonnes pratiques
-
-### Pour postStart
-
-1. Garder les opérations courtes et légères
-2. Gérer les échecs potentiels
-3. Ne pas bloquer le démarrage du conteneur
-4. Logger les actions importantes
-
-### Pour preStop
-
-1. Prévoir un timeout approprié
-2. S'assurer que le nettoyage est complet
-3. Gérer les erreurs gracieusement
-4. Coordonner avec le délai de grâce
-
-## Exemple d'application web complète
+### 3. Deployment avec hooks
 
 ```yaml
+# web-app-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: web-app
+  name: web-app-hooks
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
-      app: web
+      app: web-app
   template:
     metadata:
       labels:
-        app: web
+        app: web-app
     spec:
       containers:
         - name: web
-          image: nginx
+          image: nginx:1.29
           ports:
             - containerPort: 80
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
           lifecycle:
             postStart:
               exec:
@@ -207,52 +223,55 @@ spec:
                   - /bin/sh
                   - -c
                   - |
-                    # Configuration initiale
-                    echo "Initializing at $(date)" >> /var/log/lifecycle.log
-                    # Vérification de la santé
-                    curl --retry 5 --retry-delay 2 http://localhost:80/health
-                    # Notification de démarrage
-                    curl -X POST http://monitor:8080/startup
-
+                    echo "Pod $(hostname) started at $(date)" > /usr/share/nginx/html/info.html
+                    echo "<h1>Web Application</h1>" >> /usr/share/nginx/html/info.html
+                    echo "<p>Started: $(date)</p>" >> /usr/share/nginx/html/info.html
             preStop:
               exec:
                 command:
                   - /bin/sh
                   - -c
                   - |
-                    # Notification de l'arrêt imminent
-                    curl -X POST http://monitor:8080/prestop
-                    # Attendre que les connexions existantes se terminent
-                    sleep 10
-                    # Arrêt gracieux de nginx
+                    echo "Draining connections..."
+                    sleep 5
                     nginx -s quit
-                    # Attendre l'arrêt complet
-                    while killall -0 nginx; do sleep 1; done
-                    # Log final
-                    echo "Shutdown complete at $(date)" >> /var/log/lifecycle.log
+          readinessProbe:
+            httpGet:
+              path: /info.html
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
 ```
 
-## Points à noter
+```bash
+kubectl apply -f web-app-deployment.yaml
+kubectl get pods -l app=web-app
+kubectl get deployment web-app-hooks
 
-1. Garanties de Livraison
+# Tester l'accès aux pages créées par postStart
+kubectl port-forward deployment/web-app-hooks 8080:80
+# Dans un autre terminal : curl localhost:8080/info.html
+```
 
-- Les hooks sont exécutés "au moins une fois"
-- Plusieurs exécutions sont possibles
-- Prévoir une idempotence
+### 4. Debug et monitoring des hooks
 
-2. Gestion des Erreurs
+```bash
+# Voir les événements liés aux hooks
+kubectl describe pod lifecycle-complete
 
-- Un échec de postStart tue le conteneur
-- Un échec de preStop est loggé mais n'empêche pas la terminaison
+# Voir les logs en temps réel
+kubectl logs lifecycle-complete -f
 
-3. Débogage
+# Vérifier l'état des pods
+kubectl get pods -o wide
 
-- Utiliser `kubectl describe pod` pour voir les événements
-- Vérifier les logs du conteneur
-- Surveiller les timeouts
+# Événements du cluster
+kubectl get events --sort-by=.metadata.creationTimestamp
+```
 
-4. Limitations
+### 5. Nettoyage
 
-- Pas d'arguments passés aux handlers
-- Pas de retransmission en cas d'échec HTTP
-- Temps d'exécution limité par le délai de grâce
+```bash
+kubectl delete pod poststart-demo prestop-nginx lifecycle-complete lifecycle-error-test
+kubectl delete deployment web-app-hooks
+```
