@@ -1,36 +1,23 @@
 # ServiceAccounts dans Kubernetes
 
-## Objectifs
+## Exercice Pratique : Authentification et autorisation des pods
 
-- Créer et gérer des ServiceAccounts
-- Comprendre les Roles et RoleBindings
-- Utiliser des ServiceAccounts dans des Pods
-- Appliquer les bonnes pratiques de sécurité
+### Objectif
 
-## Exercice 1 : ServiceAccount de base
+Créer et gérer des ServiceAccounts avec des permissions RBAC spécifiques.
 
-1. Créer un ServiceAccount simple :
+### 1. ServiceAccount et permissions de base
 
 ```yaml
+# rbac-setup.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: app-service-account
   namespace: default
-```
-
-```bash
-# Appliquer et vérifier
-kubectl apply -f service-account.yaml
-kubectl get serviceaccount
-kubectl describe serviceaccount app-service-account
-```
-
-## Exercice 2 : Role et RoleBinding
-
-1. Créer un Role avec des permissions limitées :
-
-```yaml
+  labels:
+    app: rbac-demo
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -40,11 +27,7 @@ rules:
   - apiGroups: [ "" ]
     resources: [ "pods" ]
     verbs: [ "get", "watch", "list" ]
-```
-
-2. Créer un RoleBinding pour lier le Role au ServiceAccount :
-
-```yaml
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -60,11 +43,20 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-## Exercice 3 : Utilisation dans un pod
+```bash
+kubectl apply -f rbac-setup.yaml
+kubectl get serviceaccounts
+kubectl get roles
+kubectl get rolebindings
+kubectl describe serviceaccount app-service-account
+```
 
-1. Créer un Pod qui utilise le ServiceAccount :
+### 2. Scénarios à tester
+
+#### 2.1 Pod avec ServiceAccount personnalisé
 
 ```yaml
+# pod-with-sa.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -72,27 +64,36 @@ metadata:
 spec:
   serviceAccountName: app-service-account
   containers:
-    - name: main
-      image: bitnami/kubectl
+    - name: kubectl-client
+      image: bitnami/kubectl:latest
       command: [ "sleep", "infinity" ]
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "250m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
 ```
-
-2. Tester les permissions :
 
 ```bash
-# Accéder au pod
-kubectl exec -it pod-with-sa -- sh
+kubectl apply -f pod-with-sa.yaml
+kubectl get pod pod-with-sa
+kubectl wait --for=condition=Ready pod/pod-with-sa --timeout=60s
 
-# Dans le pod, tester les permissions
-kubectl get pods
-kubectl get services  # Devrait échouer
+# Tester les permissions autorisées
+kubectl exec pod-with-sa -- kubectl get pods
+kubectl exec pod-with-sa -- kubectl describe pod pod-with-sa
+
+# Tester les permissions refusées (doit échouer)
+kubectl exec pod-with-sa -- kubectl get services || echo "Access denied - as expected"
+kubectl exec pod-with-sa -- kubectl delete pod pod-with-sa || echo "Delete denied - as expected"
 ```
 
-## Exercice 4 : Cas Pratique - Application de monitoring
-
-1. Créer un ServiceAccount pour une application de monitoring :
+#### 2.2 Application de monitoring avec permissions étendues
 
 ```yaml
+# monitoring-rbac.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -104,7 +105,7 @@ metadata:
   name: monitoring-role
 rules:
   - apiGroups: [ "" ]
-    resources: [ "pods", "services" ]
+    resources: [ "pods", "services", "endpoints" ]
     verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "" ]
     resources: [ "pods/log" ]
@@ -122,95 +123,94 @@ roleRef:
   name: monitoring-role
   apiGroup: rbac.authorization.k8s.io
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Pod
 metadata:
-  name: monitoring-app
+  name: monitoring-pod
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: monitoring
-  template:
-    metadata:
-      labels:
-        app: monitoring
-    spec:
-      serviceAccountName: monitoring-sa
-      containers:
-        - name: monitoring
-          image: bitnami/kubectl
-          command: [ "sh", "-c", "while true; do kubectl get pods; sleep 10; done" ]
+  serviceAccountName: monitoring-sa
+  containers:
+    - name: monitor
+      image: bitnami/kubectl:latest
+      command: [ "sh", "-c" ]
+      args:
+        - |
+          while true; do
+            echo "=== Monitoring Check ==="
+            echo "Pods: $(kubectl get pods --no-headers | wc -l)"
+            echo "Services: $(kubectl get services --no-headers | wc -l)"
+            sleep 30
+          done
 ```
 
-## Exercice 5 : Sécurisation des ServiceAccounts
+```bash
+kubectl apply -f monitoring-rbac.yaml
+kubectl get pod monitoring-pod
+kubectl logs monitoring-pod -f
 
-1. Désactiver le montage automatique du token :
+# Tester les permissions spécifiques
+kubectl exec monitoring-pod -- kubectl get pods
+kubectl exec monitoring-pod -- kubectl get services
+kubectl exec monitoring-pod -- kubectl logs pod-with-sa
+```
+
+#### 2.3 ServiceAccount sécurisé sans token automatique
 
 ```yaml
+# secure-sa.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: secure-sa
 automountServiceAccountToken: false
-```
-
-2. Créer un pod qui monte explicitement le token :
-
-```yaml
+---
 apiVersion: v1
 kind: Pod
 metadata:
   name: secure-pod
 spec:
   serviceAccountName: secure-sa
-  automountServiceAccountToken: true
   containers:
-    - name: main
-      image: nginx
+    - name: app
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
 ```
-
-## Vérification et debug
 
 ```bash
-# Vérifier les ServiceAccounts
-kubectl get serviceaccounts
+kubectl apply -f secure-sa.yaml
+kubectl get pod secure-pod
 
-# Vérifier les Roles
-kubectl get roles
+# Vérifier qu'aucun token n'est monté
+kubectl exec secure-pod -- ls /var/run/secrets/kubernetes.io/serviceaccount/ || echo "No token mounted - as expected"
 
-# Vérifier les RoleBindings
-kubectl get rolebindings
-
-# Voir les détails du ServiceAccount
-kubectl describe serviceaccount <nom-sa>
-
-# Vérifier les permissions
-kubectl auth can-i --list --as=system:serviceaccount:default:app-service-account
+# Vérifier que les appels API échouent
+kubectl exec secure-pod -- curl -k https://kubernetes.default.svc.cluster.local/api/v1/pods || echo "API access denied without token"
 ```
 
-## Nettoyage
+### 3. Vérification des permissions
+
+```bash
+# Vérifier les permissions d'un ServiceAccount
+kubectl auth can-i --list --as=system:serviceaccount:default:app-service-account
+
+# Vérifier une permission spécifique
+kubectl auth can-i get pods --as=system:serviceaccount:default:app-service-account
+kubectl auth can-i delete pods --as=system:serviceaccount:default:app-service-account
+
+# Voir les tokens associés
+kubectl get secrets | grep app-service-account
+
+# Debug RBAC
+kubectl describe role pod-reader
+kubectl describe rolebinding read-pods
+```
+
+### 4. Nettoyage
 
 ```bash
 kubectl delete serviceaccount app-service-account monitoring-sa secure-sa
 kubectl delete role pod-reader monitoring-role
 kubectl delete rolebinding read-pods monitoring-binding
-kubectl delete pod pod-with-sa secure-pod
-kubectl delete deployment monitoring-app
+kubectl delete pod pod-with-sa monitoring-pod secure-pod
 ```
-
-## Points clés à retenir
-
-1. Les ServiceAccounts sont spécifiques à un namespace
-2. Suivre le principe du moindre privilège
-3. Utiliser automountServiceAccountToken avec précaution
-4. Toujours définir des rôles spécifiques
-5. Vérifier régulièrement les permissions accordées
-
-## Bonnes Pratiques
-
-- Créer des ServiceAccounts dédiés pour chaque application
-- Limiter les permissions au strict nécessaire
-- Documenter l'utilisation des ServiceAccounts
-- Auditer régulièrement les permissions
-- Désactiver le montage automatique des tokens si non nécessaire

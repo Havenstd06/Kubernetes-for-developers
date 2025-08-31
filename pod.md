@@ -1,16 +1,12 @@
-# Cycle de vie des pods et gestion des erreurs
+# Cycle de vie des pods dans Kubernetes
 
-## Objectifs
+## Exercice Pratique : États et gestion des erreurs
 
-- Comprendre les différents états d'un pod
-- Observer le comportement avec une image invalide
-- Examiner les logs et les événements
-- Comprendre les politiques de redémarrage
-- Expérimenter avec les probes
+### Objectif
 
-## Exercice 1 : Image invalide
+Comprendre les différents états d'un pod et observer les comportements en cas d'erreur.
 
-### 1. Créer un pod avec une image invalide
+### 1. Pod avec image invalide
 
 ```yaml
 # bad-pod.yaml
@@ -26,32 +22,25 @@ spec:
       image: nginx:doesnotexist
       ports:
         - containerPort: 80
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
 ```
-
-### 2. Observer et analyser
 
 ```bash
-# Déployer le pod
 kubectl apply -f bad-pod.yaml
-
-# Observer l'état du pod
-kubectl get pod bad-pod -w
-
-# Voir les détails du pod
+kubectl get pod bad-pod
 kubectl describe pod bad-pod
-
-# Examiner les événements
-kubectl get events --sort-by=.metadata.creationTimestamp
+kubectl get events --field-selector involvedObject.name=bad-pod --sort-by=.metadata.creationTimestamp
 ```
 
-### État attendu
+### 2. Scénarios à tester
 
-- Le pod devrait être en état "ImagePullBackOff"
-- Les événements devraient montrer des erreurs de pull d'image
-
-## Exercice 2 : CrashLoopBackOff
-
-### 1. Créer un pod qui crash
+#### 2.1 Observer CrashLoopBackOff
 
 ```yaml
 # crash-pod.yaml
@@ -62,60 +51,53 @@ metadata:
 spec:
   containers:
     - name: crash-container
-      image: busybox
-      command: [ "/bin/sh", "-c", "sleep 10 && exit 1" ]
+      image: busybox:1.28
+      command: [ "/bin/sh", "-c", "echo 'Starting...'; sleep 10; echo 'Crashing now!'; exit 1" ]
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "100m"
+        limits:
+          memory: "64Mi"
+          cpu: "200m"
 ```
 
-### 2. Observer le comportement
-
 ```bash
-# Déployer le pod
 kubectl apply -f crash-pod.yaml
-
-# Observer les redémarrages
 kubectl get pod crash-pod -w
-
-# Voir les logs
+# Attendre plusieurs cycles de redémarrage puis Ctrl+C
+kubectl describe pod crash-pod
 kubectl logs crash-pod --previous
 ```
 
-### État attendu
-
-- Le pod devrait entrer en état "CrashLoopBackOff"
-- Le nombre de redémarrages devrait augmenter
-- Le délai entre les redémarrages devrait s'allonger (backoff)
-
-## Exercice 3 : Politiques de redémarrage
-
-### 1. Tester différentes politiques
+#### 2.2 Tester les politiques de redémarrage
 
 ```yaml
-# restart-pod.yaml
+# restart-never-pod.yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: restart-pod
+  name: restart-never-pod
 spec:
-  restartPolicy: OnFailure  # Tester avec: Always, Never, OnFailure
+  restartPolicy: Never
   containers:
-    - name: restart-container
-      image: busybox
-      command: [ "/bin/sh", "-c", "sleep 10 && exit 1" ]
+    - name: test-container
+      image: busybox:1.28
+      command: [ "/bin/sh", "-c", "echo 'Task completed'; sleep 5; echo 'Exiting with error'; exit 1" ]
 ```
-
-### 2. Observer avec chaque politique
 
 ```bash
-# Tester chaque politique
-kubectl apply -f restart-pod.yaml
+kubectl apply -f restart-never-pod.yaml
+kubectl get pod restart-never-pod -w
+# Observer que le pod ne redémarre pas
 
-# Observer le comportement
-kubectl get pod restart-pod -w
+# Tester avec OnFailure
+kubectl delete pod restart-never-pod
+sed 's/Never/OnFailure/' restart-never-pod.yaml | kubectl apply -f -
+kubectl get pod restart-never-pod -w
 ```
 
-## Exercice 4 : Probes
-
-### 1. Créer un pod avec des probes
+#### 2.3 Probes défaillantes
 
 ```yaml
 # probe-pod.yaml
@@ -126,59 +108,71 @@ metadata:
 spec:
   containers:
     - name: nginx
-      image: nginx
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
       livenessProbe:
         httpGet:
-          path: /nonexistent
+          path: /nonexistent-endpoint
           port: 80
-        initialDelaySeconds: 5
+        initialDelaySeconds: 10
         periodSeconds: 5
+        failureThreshold: 3
       readinessProbe:
         httpGet:
           path: /
           port: 80
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 2
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
 ```
-
-### 2. Observer et déboguer
 
 ```bash
-# Déployer le pod
 kubectl apply -f probe-pod.yaml
-
-# Observer l'état
 kubectl get pod probe-pod -w
-
-# Voir les événements
+# Observer les redémarrages dus à la liveness probe
 kubectl describe pod probe-pod
+kubectl logs probe-pod --previous
 ```
 
-## Questions de compréhension
+### 3. Correction des problèmes
 
-1. Pourquoi le pod avec l'image invalide entre-t-il en état ImagePullBackOff ?
-2. Quelle est la différence entre CrashLoopBackOff et ImagePullBackOff ?
-3. Comment le backoff exponentiel fonctionne-t-il ?
-4. Quand utiliser chaque politique de redémarrage ?
-5. Quelle est la différence entre liveness et readiness probes ?
+```bash
+# Corriger l'image invalide
+kubectl patch pod bad-pod -p '{"spec":{"containers":[{"name":"bad-container","image":"nginx:1.29"}]}}'
+kubectl get pod bad-pod -w
 
-## Débogage
+# Corriger la liveness probe
+kubectl delete pod probe-pod
+sed 's|/nonexistent-endpoint|/|' probe-pod.yaml | kubectl apply -f -
+kubectl get pod probe-pod
+```
 
-Pour chaque scénario d'erreur :
+### 4. Debug et monitoring
 
-1. Identifier le problème dans les événements
-2. Comprendre la cause racine
-3. Appliquer la correction appropriée
-4. Vérifier la résolution
+```bash
+# Voir l'historique des événements
+kubectl get events --sort-by=.metadata.creationTimestamp
 
-## Solution des problèmes
+# Suivre les logs en temps réel
+kubectl logs crash-pod -f
 
-1. Pour l'image invalide :
-    - Corriger le nom/tag de l'image
-    - Vérifier l'accès au registry
+# Voir les métriques des pods
+kubectl top pods
 
-2. Pour le CrashLoopBackOff :
-    - Vérifier les logs du conteneur
-    - Corriger la commande/configuration
+# Vérifier les détails d'un pod spécifique
+kubectl get pod bad-pod -o yaml
+```
 
-3. Pour les probes :
-    - Ajuster les paramètres (délais, seuils)
-    - Vérifier les endpoints
+### 5. Nettoyage
+
+```bash
+kubectl delete pod bad-pod crash-pod restart-never-pod probe-pod
+```

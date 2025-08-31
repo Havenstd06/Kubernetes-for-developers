@@ -9,14 +9,18 @@
 
 ## Pré-requis
 
-Installer Metrics server : kubectl apply
--f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+Installer Metrics server :
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
 
 ## Exercice 1 : Pod basique avec resources
 
 1. Créer un pod avec requests et limits :
 
 ```yaml
+# resource-demo.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -37,7 +41,7 @@ spec:
 2. Vérifier l'état du pod :
 
 ```bash
-kubectl apply -f resource-pod.yaml
+kubectl apply -f resource-demo.yaml
 kubectl get pod resource-demo
 kubectl describe pod resource-demo
 ```
@@ -47,6 +51,7 @@ kubectl describe pod resource-demo
 1. Créer un pod qui dépasse ses limites :
 
 ```yaml
+# memory-demo.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -54,7 +59,7 @@ metadata:
 spec:
   containers:
     - name: memory-demo
-      image: polinux/stress
+      image: nginx
       resources:
         requests:
           memory: "50Mi"
@@ -62,14 +67,14 @@ spec:
         limits:
           memory: "100Mi"
           cpu: "500m"
-      command: [ "stress" ]
-      args: [ "--vm", "1", "--vm-bytes", "150M", "--vm-hang", "1" ]
+      command: [ "sh", "-c" ]
+      args: [ "while true; do echo 'Consuming memory...'; dd if=/dev/zero of=/tmp/memory.tmp bs=1M count=200; sleep 5; done" ]
 ```
 
 2. Observer le comportement :
 
 ```bash
-kubectl apply -f memory-stress.yaml
+kubectl apply -f memory-demo.yaml
 kubectl get pod memory-demo
 kubectl describe pod memory-demo
 ```
@@ -79,6 +84,7 @@ kubectl describe pod memory-demo
 1. Créer un LimitRange pour le namespace :
 
 ```yaml
+# mem-limit-range.yaml
 apiVersion: v1
 kind: LimitRange
 metadata:
@@ -94,9 +100,14 @@ spec:
       type: Container
 ```
 
+```bash
+kubectl apply -f mem-limit-range.yaml
+```
+
 2. Créer un pod sans spécifier de ressources :
 
 ```yaml
+# default-resources.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -105,6 +116,10 @@ spec:
   containers:
     - name: nginx
       image: nginx
+```
+
+```bash
+kubectl apply -f default-resources.yaml
 ```
 
 3. Vérifier les ressources attribuées automatiquement :
@@ -118,6 +133,7 @@ kubectl describe pod default-resources
 1. Créer un ResourceQuota :
 
 ```yaml
+# compute-quota.yaml
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -131,9 +147,14 @@ spec:
     pods: "4"
 ```
 
+```bash
+kubectl apply -f compute-quota.yaml
+```
+
 2. Tenter de déployer plusieurs pods :
 
 ```yaml
+# nginx-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -160,6 +181,10 @@ spec:
               cpu: "1"
 ```
 
+```bash
+kubectl apply -f nginx-deployment.yaml
+```
+
 3. Observer le comportement :
 
 ```bash
@@ -170,9 +195,17 @@ kubectl describe deployment nginx-deployment
 
 ## Exercice 5 : Les classes QoS
 
+1. Libérer les ressources prises par les exercices précédants :
+
+```bash
+kubectl delete deployment nginx-deployment
+kubectl delete pod resource-demo memory-demo default-resources --ignore-not-found
+```
+
 1. Pod Guaranteed (requests = limits) :
 
 ```yaml
+# qos-guaranteed.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -190,9 +223,14 @@ spec:
           cpu: "500m"
 ```
 
+```bash
+kubectl apply -f qos-guaranteed.yaml 
+```
+
 2. Pod Burstable (requests < limits) :
 
 ```yaml
+# qos-burstable.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -210,9 +248,14 @@ spec:
           cpu: "500m"
 ```
 
+```bash
+kubectl apply -f qos-burstable.yaml 
+```
+
 3. Pod BestEffort (pas de requests ni limits) :
 
 ```yaml
+# qos-besteffort.yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -221,6 +264,10 @@ spec:
   containers:
     - name: nginx
       image: nginx
+```
+
+```bash
+kubectl apply -f qos-besteffort.yaml
 ```
 
 4. Vérifier les QoS classes :
@@ -244,8 +291,8 @@ kubectl top node
 ## Nettoyage
 
 ```bash
-kubectl delete pod resource-demo memory-demo default-resources qos-guaranteed qos-burstable qos-besteffort
-kubectl delete limitrange mem-limit-range
-kubectl delete resourcequota compute-quota
-kubectl delete deployment nginx-deployment
+kubectl delete pod resource-demo memory-demo default-resources qos-guaranteed qos-burstable qos-besteffort --ignore-not-found
+kubectl delete limitrange mem-limit-range --ignore-not-found
+kubectl delete resourcequota compute-quota --ignore-not-found
+kubectl delete deployment nginx-deployment --ignore-not-found
 ```
