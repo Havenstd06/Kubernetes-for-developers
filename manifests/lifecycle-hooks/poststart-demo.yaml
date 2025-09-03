@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: poststart-demo
+  labels:
+    app: poststart-demo
+spec:
+  containers:
+    - name: web
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
+      lifecycle:
+        postStart:
+          exec:
+            command: [ "/bin/sh", "-c", "echo \"Container started at $(date)\" > /usr/share/nginx/html/startup.html" ]

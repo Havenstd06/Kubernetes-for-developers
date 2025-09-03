@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lifecycle-error-test
+spec:
+  containers:
+    - name: app
+      image: nginx:1.29
+      lifecycle:
+        postStart:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                # Test avec possibilité d'échec
+                if [ "$((RANDOM % 2))" -eq 0 ]; then
+                  echo "PostStart succeeded" > /tmp/poststart-result
+                  exit 0
+                else
+                  echo "PostStart failed" > /tmp/poststart-result
+                  exit 1
+                fi

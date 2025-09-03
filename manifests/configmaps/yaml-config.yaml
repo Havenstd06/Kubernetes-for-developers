@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yaml-config
+data:
+  database.conf: |
+    host=postgresql
+    port=5432
+    name=myapp
+  api.conf: |
+    endpoint=/api/v1
+    timeout=30

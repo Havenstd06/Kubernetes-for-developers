@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: print-date
+  labels:
+    app: print-date
+spec:
+  template:
+    spec:
+      containers:
+        - name: print-date
+          image: busybox:1.28
+          command: [ "sh", "-c", "date; echo 'Job terminé avec succès!'" ]
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "100m"
+            limits:
+              memory: "64Mi"
+              cpu: "200m"
+      restartPolicy: Never

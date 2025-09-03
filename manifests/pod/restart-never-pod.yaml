@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restart-never-pod
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test-container
+      image: busybox:1.28
+      command: [ "/bin/sh", "-c", "echo 'Task completed'; sleep 5; echo 'Exiting with error'; exit 1" ]

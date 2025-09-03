@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: prestop-nginx
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
+      lifecycle:
+        preStop:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "Graceful shutdown initiated at $(date)" >> /var/log/shutdown.log
+                nginx -s quit
+                while pgrep nginx > /dev/null; do 
+                  echo "Waiting for nginx to stop..."
+                  sleep 1
+                done
+                echo "Nginx stopped gracefully at $(date)" >> /var/log/shutdown.log
+  terminationGracePeriodSeconds: 30

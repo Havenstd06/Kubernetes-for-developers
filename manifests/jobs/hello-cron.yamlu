@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hello-cron
+spec:
+  schedule: "*/2 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Allow
+  startingDeadlineSeconds: 60
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: hello
+              image: busybox:1.28
+              command:
+                - sh
+                - -c
+                - |
+                  echo "=== CronJob Execution ==="
+                  echo "Date: $(date)"
+                  echo "Hostname: $(hostname)"
+                  echo "========================="
+          restartPolicy: Never

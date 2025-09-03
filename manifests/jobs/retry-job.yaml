@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: retry-job
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      containers:
+        - name: retry-container
+          image: busybox:1.28
+          command:
+            - sh
+            - -c
+            - |
+              echo "Tentative de traitement..."
+              if [ $RANDOM -gt 20000 ]; then 
+                echo "Succès!"
+                exit 0
+              else 
+                echo "Échec simulé!"
+                exit 1
+              fi
+      restartPolicy: Never

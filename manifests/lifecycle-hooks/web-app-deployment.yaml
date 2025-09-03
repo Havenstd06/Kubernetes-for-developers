@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app-hooks
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.29
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    echo "Pod $(hostname) started at $(date)" > /usr/share/nginx/html/info.html
+                    echo "<h1>Web Application</h1>" >> /usr/share/nginx/html/info.html
+                    echo "<p>Started: $(date)</p>" >> /usr/share/nginx/html/info.html
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    echo "Draining connections..."
+                    sleep 5
+                    nginx -s quit
+          readinessProbe:
+            httpGet:
+              path: /info.html
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5

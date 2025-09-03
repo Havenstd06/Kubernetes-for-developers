@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-processor
+spec:
+  completions: 4
+  parallelism: 2
+  completionMode: Indexed
+  template:
+    spec:
+      containers:
+        - name: processor
+          image: python:3.9-alpine
+          command:
+            - python
+            - -c
+            - |
+              import time
+              import random
+              import os
+              import sys
+
+              job_index = os.environ.get('JOB_COMPLETION_INDEX', '0')
+              print(f"[Batch {job_index}] Starting data processing...")
+
+              # Simuler différents types de traitement
+              tasks = ['validation', 'transformation', 'aggregation', 'export']
+              task = tasks[int(job_index)]
+
+              print(f"[Batch {job_index}] Executing {task} task")
+
+              # Simuler un temps de traitement variable
+              processing_time = random.randint(5, 15)
+              for i in range(processing_time):
+                  time.sleep(1)
+                  if i % 3 == 0:
+                      progress = (i + 1) / processing_time * 100
+                      print(f"[Batch {job_index}] Progress: {progress:.1f}%")
+
+              print(f"[Batch {job_index}] {task} completed successfully!")
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+      restartPolicy: Never

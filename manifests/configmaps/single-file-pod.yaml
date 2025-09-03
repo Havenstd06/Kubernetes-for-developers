@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: single-file-pod
+spec:
+  containers:
+    - name: app
+      image: nginx
+      volumeMounts:
+        - name: config-volume
+          mountPath: /etc/app/database.conf
+          subPath: database.conf
+  volumes:
+    - name: config-volume
+      configMap:
+        name: yaml-config
+        items:
+          - key: database.conf
+            path: database.conf

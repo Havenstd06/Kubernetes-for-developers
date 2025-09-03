@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lifecycle-complete
+spec:
+  containers:
+    - name: app
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
+      volumeMounts:
+        - name: log-volume
+          mountPath: /var/log/app
+      lifecycle:
+        postStart:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "[$(date)] PostStart: Container initialization started" >> /var/log/app/lifecycle.log
+                # Simuler une initialisation
+                sleep 2
+                echo "[$(date)] PostStart: Application ready" >> /var/log/app/lifecycle.log
+                echo "Application initialized successfully" > /usr/share/nginx/html/status.html
+        preStop:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "[$(date)] PreStop: Shutdown signal received" >> /var/log/app/lifecycle.log
+                echo "Application shutting down" > /usr/share/nginx/html/status.html
+                # Arrêt gracieux
+                nginx -s quit
+                # Attendre l'arrêt complet
+                timeout=10
+                while pgrep nginx > /dev/null && [ $timeout -gt 0 ]; do
+                  echo "[$(date)] PreStop: Waiting for shutdown..." >> /var/log/app/lifecycle.log
+                  sleep 1
+                  timeout=$((timeout-1))
+                done
+                echo "[$(date)] PreStop: Shutdown complete" >> /var/log/app/lifecycle.log
+  terminationGracePeriodSeconds: 20
+  volumes:
+    - name: log-volume
+      emptyDir: { }

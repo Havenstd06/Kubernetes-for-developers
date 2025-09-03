@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitoring-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monitoring-role
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "pods", "services", "endpoints" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "pods/log" ]
+    verbs: [ "get" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monitoring-binding
+subjects:
+  - kind: ServiceAccount
+    name: monitoring-sa
+roleRef:
+  kind: Role
+  name: monitoring-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monitoring-pod
+spec:
+  serviceAccountName: monitoring-sa
+  containers:
+    - name: monitor
+      image: bitnami/kubectl:latest
+      command: [ "sh", "-c" ]
+      args:
+        - |
+          while true; do
+            echo "=== Monitoring Check ==="
+            echo "Pods: $(kubectl get pods --no-headers | wc -l)"
+            echo "Services: $(kubectl get services --no-headers | wc -l)"
+            sleep 30
+          done

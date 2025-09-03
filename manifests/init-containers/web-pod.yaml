@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-pod
+  labels:
+    app: web-app
+spec:
+  initContainers:
+    - name: init-service-check
+      image: busybox:1.28
+      command: [ 'sh', '-c' ]
+      args: [ 'until nslookup backend-service.default.svc.cluster.local; do echo "Waiting for backend service"; sleep 2; done;' ]
+  containers:
+    - name: web-app
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"

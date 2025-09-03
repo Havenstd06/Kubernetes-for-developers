@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  # Configuration nginx complète et valide
+  nginx.conf: |
+    events {
+      worker_connections 1024;
+    }
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+
+      server {
+        listen 80;
+        server_name localhost;
+
+        location / {
+          root /usr/share/nginx/html;
+          index index.html;
+        }
+      }
+    }
+  # Page d'accueil personnalisée
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>ConfigMap Demo</title>
+    </head>
+    <body>
+      <h1>Welcome to my configured nginx!</h1>
+      <p>This page is served from a ConfigMap</p>
+    </body>
+    </html>

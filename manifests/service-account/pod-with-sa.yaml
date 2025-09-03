@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-sa
+spec:
+  serviceAccountName: app-service-account
+  containers:
+    - name: kubectl-client
+      image: bitnami/kubectl:latest
+      command: [ "sleep", "infinity" ]
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "250m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"

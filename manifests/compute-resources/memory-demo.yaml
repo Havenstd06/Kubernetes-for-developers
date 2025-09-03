@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-demo
+spec:
+  containers:
+    - name: memory-demo
+      image: nginx
+      resources:
+        requests:
+          memory: "50Mi"
+          cpu: "250m"
+        limits:
+          memory: "100Mi"
+          cpu: "500m"
+      command: [ "sh", "-c" ]
+      args: [ "while true; do echo 'Consuming memory...'; dd if=/dev/zero of=/tmp/memory.tmp bs=1M count=200; sleep 5; done" ]

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secure-sa
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+spec:
+  serviceAccountName: secure-sa
+  containers:
+    - name: app
+      image: nginx:1.29
+      ports:
+        - containerPort: 80
