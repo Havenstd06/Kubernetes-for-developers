@@ -1,0 +1,28 @@
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: "1.29"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+
+serviceAccount:
+  create: true
+  automount: true
+
+autoscaling:
+  enabled: false
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "250m"
+  limits:
+    memory: "128Mi"
+    cpu: "500m"
